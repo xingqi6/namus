@@ -3,13 +3,15 @@ from huggingface_hub import snapshot_download, HfApi
 import os
 import sys
 import time
-import json
 from datetime import datetime
 
 def log(msg):
     print(f"[RESOURCE] {msg}")
 
 def check_and_load(repo_id, token, target_dir, force=False):
+    if not repo_id or not token:
+        return
+
     log("Checking resource updates...")
     info_file = os.path.join(target_dir, ".meta_info")
     
@@ -38,10 +40,20 @@ def check_and_load(repo_id, token, target_dir, force=False):
         log(f"Loader exception: {str(e)}")
 
 if __name__ == "__main__":
-    # repo token dir interval force
+    # 参数：repo_id, token, target_dir, interval, force_first_run
+    repo_id = sys.argv[1]
+    token = sys.argv[2]
+    target_dir = sys.argv[3]
+    interval = int(sys.argv[4])
+    force = sys.argv[5].lower() == "true"
+
+    # 首次运行
+    check_and_load(repo_id, token, target_dir, force)
+
+    # 循环检测
     while True:
+        time.sleep(interval)
         try:
-            check_and_load(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[5].lower() == "true")
+            check_and_load(repo_id, token, target_dir, False)
         except:
             pass
-        time.sleep(int(sys.argv[4]))
