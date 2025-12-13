@@ -1,4 +1,4 @@
-name: Build and Push
+name: Build and Push Image
 
 on:
   push:
@@ -7,7 +7,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # 将 username 替换为你的 GitHub 用户名，repo 替换为你的仓库名
+  # 将 <your-github-username> 替换为你的 GitHub 用户名
+  # 将 <your-repo-name> 替换为你的仓库名 (全部小写)
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
