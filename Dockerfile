@@ -14,6 +14,7 @@ RUN apk update && apk add --no-cache \
     gzip \
     ffmpeg \
     && rm -rf /var/cache/apk/*
+RUN pip install --no-cache-dir huggingface_hub webdav4 requests
 
 # 环境配置
 RUN python3 -m venv /venv
