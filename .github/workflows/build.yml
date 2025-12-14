@@ -34,4 +34,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v6
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v7
