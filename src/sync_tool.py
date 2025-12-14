@@ -77,13 +77,17 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
     if action == "push":
         log("Starting backup (PUSH)...")
         
+        # 使用相对路径避免 301 错误
+        list_path = remote_dir.lstrip('/')
+        
         # 确保远程目录存在
         try:
-            recursive_mkdir(client, remote_dir)
+            if not client.exists(list_path):
+                recursive_mkdir(client, remote_dir)
         except Exception as e:
-            log(f"Failed to create remote directory: {str(e)}")
-            return
-
+            log(f"Failed to verify/create remote directory: {str(e)}")
+            # 继续尝试上传
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{CURRENT_PREFIX}{timestamp}.tar.gz"
         remote_full_path = f"{remote_dir}/{filename}"
@@ -138,13 +142,17 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             log("Checking for old backups to clean up...")
             try:
                 # 确保目录存在且可访问
-                if not client.exists(remote_dir):
-                    log(f"Remote directory {remote_dir} does not exist yet.")
+                # 使用相对路径而不是绝对路径来避免 301
+                list_path = remote_dir.lstrip('/')  # 移除开头的斜杠
+                
+                if not client.exists(list_path):
+                    log(f"Remote directory {list_path} does not exist yet.")
                     if os.path.exists(TEMP_FILE): 
                         os.remove(TEMP_FILE)
                     return True
                 
-                files = client.ls(remote_dir, detail=True)
+                # 列出文件时使用相对路径
+                files = client.ls(list_path, detail=True)
                 
                 # 筛选所有备份文件
                 backups = [
@@ -166,7 +174,9 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
                     
                     for item in delete_list:
                         try:
-                            client.remove(f"{remote_dir}/{item['name']}")
+                            # 删除时也使用相对路径
+                            delete_path = f"{list_path}/{item['name']}"
+                            client.remove(delete_path)
                             log(f"✓ Deleted: {item['name']}")
                         except Exception as e:
                             log(f"✗ Failed to delete {item['name']}: {str(e)}")
@@ -175,6 +185,7 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
                     
             except Exception as e:
                 log(f"Cleanup error: {str(e)}")
+                # 清理错误不影响备份成功状态
 
         except Exception as e:
             log(f"Backup failed: {str(e)}")
@@ -185,12 +196,15 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
         log("Starting data recovery (PULL)...")
         
         try:
+            # 使用相对路径避免 301 错误
+            list_path = remote_dir.lstrip('/')
+            
             # 检查远程目录是否存在
-            if not client.exists(remote_dir):
+            if not client.exists(list_path):
                 log("Remote backup directory does not exist. Starting fresh.")
                 return False
             
-            files = client.ls(remote_dir, detail=True)
+            files = client.ls(list_path, detail=True)
             
             # 查找所有备份文件
             backups = [
@@ -211,8 +225,9 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             log(f"Found latest backup: {latest['name']}")
             log("Downloading backup...")
             
-            # 下载备份文件
-            client.download_file(f"{remote_dir}/{latest['name']}", TEMP_FILE)
+            # 下载备份文件 - 使用相对路径
+            download_path = f"{list_path}/{latest['name']}"
+            client.download_file(download_path, TEMP_FILE)
             
             log("Extracting backup...")
             # 解压到目标目录
