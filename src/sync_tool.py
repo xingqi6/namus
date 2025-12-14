@@ -7,7 +7,6 @@ from webdav4.client import Client
 # --- 配置 ---
 MAX_BACKUPS = 5
 CURRENT_PREFIX = "sys_dat_"
-# 支持识别所有历史备份前缀
 TARGET_PREFIXES = ("sys_dat_", "sys_data_", "sys_backup_", "navidrome_backup_") 
 TEMP_FILE = "/tmp/core_cache.dat"
 
@@ -51,45 +50,52 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
         log("No WebDAV URL provided, skipping sync.")
         return False
     
-    # 规范化 URL 和路径 - 确保尾部斜杠一致性
-    url = url.rstrip('/')  # 先移除所有尾部斜杠
+    # === 关键修复：路径处理 ===
+    # 1. 标准化 base URL（移除尾部斜杠）
+    url = url.rstrip('/')
+    
+    # 2. 标准化远程目录路径
     if not remote_dir.startswith("/"): 
         remote_dir = "/" + remote_dir
     remote_dir = remote_dir.rstrip('/')
     
-    # 为了避免 301 重定向，确保 base URL 不以斜杠结尾
-    # 但完整路径需要正确格式化
-    log(f"WebDAV URL: {url}")
-    log(f"Remote directory: {remote_dir}")
+    # 3. 计算相对路径（用于 ls/exists/remove/download）
+    relative_path = remote_dir.lstrip('/')
+    
+    # 调试日志
+    log(f"WebDAV Base URL: {url}")
+    log(f"Remote Directory (absolute): {remote_dir}")
+    log(f"Remote Directory (relative): {relative_path}")
 
-    # 检查连接 - 使用标准化的 URL
+    # 检查连接（使用带斜杠的 URL）
     if not check_connection(url + "/", user, pwd):
         log("WebDAV connection failed or not configured.")
         return False
 
     try:
-        # WebDAV 客户端需要以斜杠结尾的 URL
+        # 创建客户端（必须以斜杠结尾）
         client = get_client(url + "/", user, pwd)
     except Exception as e:
         log(f"Failed to create WebDAV client: {str(e)}")
         return False
 
+    # ========================================
+    # PUSH 操作：备份数据
+    # ========================================
     if action == "push":
         log("Starting backup (PUSH)...")
         
-        # 使用相对路径避免 301 错误
-        list_path = remote_dir.lstrip('/')
-        
-        # 确保远程目录存在
+        # 确保远程目录存在（使用相对路径检查）
         try:
-            if not client.exists(list_path):
+            if not client.exists(relative_path):
+                log(f"Creating remote directory: {relative_path}")
                 recursive_mkdir(client, remote_dir)
         except Exception as e:
-            log(f"Failed to verify/create remote directory: {str(e)}")
-            # 继续尝试上传
+            log(f"Directory check/create info: {str(e)}")
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{CURRENT_PREFIX}{timestamp}.tar.gz"
+        # 上传时使用绝对路径
         remote_full_path = f"{remote_dir}/{filename}"
 
         try:
@@ -114,10 +120,10 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
                 log("No files to backup.")
                 if os.path.exists(TEMP_FILE): 
                     os.remove(TEMP_FILE)
-                return
+                return False
             
-            # 2. 上传到 WebDAV
-            log(f"Uploading backup ({count} files)...")
+            # 2. 上传到 WebDAV（使用绝对路径）
+            log(f"Uploading backup ({count} files) to: {remote_full_path}")
             try:
                 client.upload_file(TEMP_FILE, remote_full_path, overwrite=True)
                 log(f"✓ Backup uploaded: {filename}")
@@ -138,21 +144,16 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             if os.path.exists(TEMP_FILE): 
                 os.remove(TEMP_FILE)
 
-            # 3. 清理旧备份（保留最新的 MAX_BACKUPS 个）
+            # 3. 清理旧备份（使用相对路径）
             log("Checking for old backups to clean up...")
             try:
-                # 确保目录存在且可访问
-                # 使用相对路径而不是绝对路径来避免 301
-                list_path = remote_dir.lstrip('/')  # 移除开头的斜杠
-                
-                if not client.exists(list_path):
-                    log(f"Remote directory {list_path} does not exist yet.")
-                    if os.path.exists(TEMP_FILE): 
-                        os.remove(TEMP_FILE)
+                # 使用相对路径列出文件
+                if not client.exists(relative_path):
+                    log(f"Remote directory not found, skipping cleanup.")
                     return True
                 
-                # 列出文件时使用相对路径
-                files = client.ls(list_path, detail=True)
+                log(f"Listing files in: {relative_path}")
+                files = client.ls(relative_path, detail=True)
                 
                 # 筛选所有备份文件
                 backups = [
@@ -174,8 +175,9 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
                     
                     for item in delete_list:
                         try:
-                            # 删除时也使用相对路径
-                            delete_path = f"{list_path}/{item['name']}"
+                            # 删除时使用相对路径
+                            delete_path = f"{relative_path}/{item['name']}"
+                            log(f"Deleting: {delete_path}")
                             client.remove(delete_path)
                             log(f"✓ Deleted: {item['name']}")
                         except Exception as e:
@@ -191,20 +193,24 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             log(f"Backup failed: {str(e)}")
             if os.path.exists(TEMP_FILE): 
                 os.remove(TEMP_FILE)
+            return False
+        
+        return True
 
+    # ========================================
+    # PULL 操作：恢复数据
+    # ========================================
     elif action == "pull":
         log("Starting data recovery (PULL)...")
         
         try:
-            # 使用相对路径避免 301 错误
-            list_path = remote_dir.lstrip('/')
-            
-            # 检查远程目录是否存在
-            if not client.exists(list_path):
+            # 使用相对路径检查目录
+            if not client.exists(relative_path):
                 log("Remote backup directory does not exist. Starting fresh.")
                 return False
             
-            files = client.ls(list_path, detail=True)
+            log(f"Listing backups in: {relative_path}")
+            files = client.ls(relative_path, detail=True)
             
             # 查找所有备份文件
             backups = [
@@ -225,8 +231,9 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             log(f"Found latest backup: {latest['name']}")
             log("Downloading backup...")
             
-            # 下载备份文件 - 使用相对路径
-            download_path = f"{list_path}/{latest['name']}"
+            # 下载备份文件（使用相对路径）
+            download_path = f"{relative_path}/{latest['name']}"
+            log(f"Download path: {download_path}")
             client.download_file(download_path, TEMP_FILE)
             
             log("Extracting backup...")
