@@ -9,8 +9,10 @@ from webdav4.client import Client
 
 # --- 配置 ---
 MAX_BACKUPS = 5
-# 统一前缀：请确保以后都用这个，不要改了
-FILE_PREFIX = "sys_dat_" 
+# 新生成的文件用这个前缀
+CURRENT_PREFIX = "sys_dat_"
+# 清理时，识别这些前缀的文件（涵盖了我们之前的所有版本）
+TARGET_PREFIXES = ("sys_dat_", "sys_data_", "sys_backup_")
 TEMP_FILE = "/tmp/core_cache.dat"
 
 def log(msg):
@@ -61,7 +63,7 @@ def recursive_mkdir(client, remote_path):
 def run_sync(action, url, user, pwd, remote_dir, local_path):
     if not url: return
 
-    # 路径规范化
+    # 路径规范化：确保 remote_dir 开头有 / 结尾没有 /
     if not url.endswith("/"): url = url + "/"
     if not remote_dir.startswith("/"): remote_dir = "/" + remote_dir
     remote_dir = remote_dir.rstrip('/')
@@ -78,7 +80,7 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
     if action == "push":
         recursive_mkdir(client, remote_dir)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{FILE_PREFIX}{timestamp}.tar.gz"
+        filename = f"{CURRENT_PREFIX}{timestamp}.tar.gz"
         remote_full_path = f"{remote_dir}/{filename}"
 
         try:
@@ -101,40 +103,47 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             
             if os.path.exists(TEMP_FILE): os.remove(TEMP_FILE)
 
-            # 3. 清理旧文件 (增强版)
+            # 3. 强力清理旧文件
             try:
-                # 获取列表
+                # 获取目录下所有文件
                 files = client.ls(remote_dir, detail=True)
                 
-                # 筛选出符合当前前缀的备份文件
+                # 筛选：只要是 tar.gz 且前缀匹配我们用过的任何一种
                 backups = [
                     f for f in files 
                     if f["type"] == "file" 
-                    and f["name"].startswith(FILE_PREFIX)
+                    and f["name"].endswith(".tar.gz")
+                    and f["name"].startswith(TARGET_PREFIXES)
                 ]
                 
-                # 按文件名倒序排列 (时间新的在前: 2025... 2024...)
+                # 按文件名倒序 (最新的在前)
                 backups.sort(key=lambda x: x["name"], reverse=True)
                 
-                # 检查数量
-                if len(backups) > MAX_BACKUPS:
-                    # 只要超过5个，多出来的全部删掉
+                total_count = len(backups)
+                
+                if total_count > MAX_BACKUPS:
+                    # 保留前5个，剩下的都要删
+                    files_to_keep = backups[:MAX_BACKUPS]
                     files_to_delete = backups[MAX_BACKUPS:]
+                    
+                    log(f"Cleanup: Found {total_count} backups. Keeping {len(files_to_keep)}, Deleting {len(files_to_delete)}.")
                     
                     for item in files_to_delete:
                         file_name = item['name']
-                        # 拼接删除路径
-                        del_path = f"{remote_dir}/{file_name}"
+                        # 拼接完整路径，处理斜杠
+                        del_path = f"{remote_dir}/{file_name}".replace("//", "/")
                         
                         try:
                             client.remove(del_path)
-                            # 打印日志让你知道删除了
-                            log(f"Auto-cleanup: Removed old file {file_name}")
+                            log(f"Deleted old backup: {file_name}")
                         except Exception as e:
-                            log(f"Cleanup failed for {file_name}: {str(e)}")
+                            log(f"Failed to delete {file_name}: {str(e)}")
+                else:
+                    # 如果数量没超标，就不输出日志，保持安静
+                    pass
                             
             except Exception as e:
-                log(f"Cleanup process error: {str(e)}")
+                log(f"Cleanup error: {str(e)}")
 
         except Exception as e:
             log(f"Sync warning: {str(e)}")
@@ -145,7 +154,13 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             if not client.exists(remote_dir): return
 
             files = client.ls(remote_dir, detail=True)
-            backups = [f for f in files if f["type"] == "file" and f["name"].startswith(FILE_PREFIX)]
+            # 恢复时也识别所有前缀
+            backups = [
+                f for f in files 
+                if f["type"] == "file" 
+                and f["name"].endswith(".tar.gz")
+                and f["name"].startswith(TARGET_PREFIXES)
+            ]
             
             if not backups: return
 
