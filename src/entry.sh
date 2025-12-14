@@ -1,4 +1,12 @@
 #!/bin/bash
+# ----------------------------------------
+echo "============== VERSION CHECK: V5 (LATEST) =============="
+echo "If you do not see this line, HF is using OLD code."
+# ----------------------------------------
+
+# ... 下面是原有的代码 ...
+APP_DIR=${MUSIC_DIR:-/assets}
+# ...
 
 # --- 变量配置 ---
 APP_DIR=${MUSIC_DIR:-/assets}
