@@ -9,17 +9,14 @@ from webdav4.client import Client
 
 # --- 配置 ---
 MAX_BACKUPS = 5
-FILE_PREFIX = "sys_dat_"  # 名字改得更通用一点，不叫 backup
+# 统一前缀：请确保以后都用这个，不要改了
+FILE_PREFIX = "sys_dat_" 
 TEMP_FILE = "/tmp/core_cache.dat"
 
 def log(msg):
-    # 只打印必要信息
     print(f"[SYSTEM] {msg}", flush=True)
 
 def check_connection(url, user, pwd):
-    """
-    静默检查连接，只有出错时才报错
-    """
     try:
         response = requests.request(
             "PROPFIND",
@@ -28,18 +25,15 @@ def check_connection(url, user, pwd):
             headers={"Depth": "0"},
             timeout=15
         )
-        
-        # 针对 InfiniCLOUD 的特殊检测
         if response.status_code == 200 and "html" in response.headers.get("Content-Type", ""):
-            log("Connection Error: Endpoint returned HTML (Check Apps Connection/Password)")
+            log("Error: Endpoint returned HTML")
             return False
         if response.status_code in [401, 403]:
-            log("Auth Error: Access denied")
+            log("Error: Access denied")
             return False
         if response.status_code == 404:
-            log("Net Error: Endpoint not found")
+            log("Error: Endpoint not found")
             return False
-            
         return True
     except:
         return False
@@ -65,19 +59,15 @@ def recursive_mkdir(client, remote_path):
             pass
 
 def run_sync(action, url, user, pwd, remote_dir, local_path):
-    if not url:
-        return
+    if not url: return
 
-    # URL 和路径修正
-    if not url.endswith("/"):
-        url = url + "/"
-    if not remote_dir.startswith("/"):
-        remote_dir = "/" + remote_dir
+    # 路径规范化
+    if not url.endswith("/"): url = url + "/"
+    if not remote_dir.startswith("/"): remote_dir = "/" + remote_dir
     remote_dir = remote_dir.rstrip('/')
 
-    # 静默检查
     if not check_connection(url, user, pwd):
-        log("Sync skipped: Connection unstable")
+        log("Connection unstable, sync skipped.")
         return
 
     try:
@@ -86,15 +76,13 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
         return
 
     if action == "push":
-        # 只有在真正开始传输时才打印一行，平时保持安静
-        # log("Syncing data...") 
-        
         recursive_mkdir(client, remote_dir)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{FILE_PREFIX}{timestamp}.tar.gz"
         remote_full_path = f"{remote_dir}/{filename}"
 
         try:
+            # 1. 打包
             with tarfile.open(TEMP_FILE, "w:gz") as tar:
                 count = 0
                 for root, dirs, files in os.walk(local_path):
@@ -105,41 +93,61 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
                         tar.add(full_path, arcname=rel_path)
                         count += 1
             
-            if count == 0:
-                return
+            if count == 0: return
 
+            # 2. 上传
             client.upload_file(TEMP_FILE, remote_full_path, overwrite=True)
-            log(f"Data synced: {filename}") # 只在成功时说一句话
+            log(f"Data synced: {filename}")
             
             if os.path.exists(TEMP_FILE): os.remove(TEMP_FILE)
 
-            # 静默清理旧文件
+            # 3. 清理旧文件 (增强版)
             try:
+                # 获取列表
                 files = client.ls(remote_dir, detail=True)
-                backups = [f for f in files if f["type"] == "file" and f["name"].startswith(FILE_PREFIX)]
+                
+                # 筛选出符合当前前缀的备份文件
+                backups = [
+                    f for f in files 
+                    if f["type"] == "file" 
+                    and f["name"].startswith(FILE_PREFIX)
+                ]
+                
+                # 按文件名倒序排列 (时间新的在前: 2025... 2024...)
                 backups.sort(key=lambda x: x["name"], reverse=True)
+                
+                # 检查数量
                 if len(backups) > MAX_BACKUPS:
-                    for item in backups[MAX_BACKUPS:]:
-                        client.remove(f"{remote_dir}/{item['name']}")
-            except:
-                pass
+                    # 只要超过5个，多出来的全部删掉
+                    files_to_delete = backups[MAX_BACKUPS:]
+                    
+                    for item in files_to_delete:
+                        file_name = item['name']
+                        # 拼接删除路径
+                        del_path = f"{remote_dir}/{file_name}"
+                        
+                        try:
+                            client.remove(del_path)
+                            # 打印日志让你知道删除了
+                            log(f"Auto-cleanup: Removed old file {file_name}")
+                        except Exception as e:
+                            log(f"Cleanup failed for {file_name}: {str(e)}")
+                            
+            except Exception as e:
+                log(f"Cleanup process error: {str(e)}")
 
         except Exception as e:
             log(f"Sync warning: {str(e)}")
 
     elif action == "pull":
-        # 恢复时的日志可以稍微详细一点点，因为只会发生一次
         log("Initializing data recovery...")
         try:
-            if not client.exists(remote_dir):
-                log("New instance initialized.")
-                return
+            if not client.exists(remote_dir): return
 
             files = client.ls(remote_dir, detail=True)
             backups = [f for f in files if f["type"] == "file" and f["name"].startswith(FILE_PREFIX)]
             
-            if not backups:
-                return
+            if not backups: return
 
             backups.sort(key=lambda x: x["name"], reverse=True)
             latest = backups[0]
