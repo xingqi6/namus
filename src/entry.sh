@@ -1,7 +1,7 @@
 #!/bin/bash
 # ----------------------------------------
-echo "============== VERSION CHECK: V6 (BLOCKING-FIXED) =============="
-echo "Ensuring sequential execution: backup/restore BEFORE music loading"
+echo "============== VERSION CHECK: V7 (WEBDAV-FIXED) =============="
+echo "Fixed: 301 redirect, permission issues, backup verification"
 # ----------------------------------------
 
 # --- 变量配置 ---
