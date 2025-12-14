@@ -2,7 +2,6 @@
 import os
 import sys
 import tarfile
-import time
 import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime
@@ -10,23 +9,18 @@ from webdav4.client import Client
 
 # --- 配置 ---
 MAX_BACKUPS = 5
-FILE_PREFIX = "sys_backup_"
-TEMP_FILE = "/tmp/pkg_cache.dat"
+FILE_PREFIX = "sys_dat_"  # 名字改得更通用一点，不叫 backup
+TEMP_FILE = "/tmp/core_cache.dat"
 
 def log(msg):
+    # 只打印必要信息
     print(f"[SYSTEM] {msg}", flush=True)
 
-def debug_connection(url, user, pwd):
+def check_connection(url, user, pwd):
     """
-    暴力调试函数：直接发送底层请求，看服务器到底回了什么
+    静默检查连接，只有出错时才报错
     """
-    log(f"--- DEBUG START ---")
-    log(f"Target: {url}")
-    log(f"User: {user}")
-    log(f"Pwd Length: {len(pwd)} chars")
-    
     try:
-        # 发送标准的 WebDAV PROPFIND 请求
         response = requests.request(
             "PROPFIND",
             url,
@@ -35,34 +29,20 @@ def debug_connection(url, user, pwd):
             timeout=15
         )
         
-        log(f"Server Response Code: {response.status_code}")
-        
-        if response.status_code == 401:
-            log("❌ ERROR: 401 Unauthorized. 密码或用户名绝对错了！")
-            log("请检查：1. 是否开启了 Apps Connection? 2. 是否使用了 User ID? 3. 是否使用了 Apps Password?")
+        # 针对 InfiniCLOUD 的特殊检测
+        if response.status_code == 200 and "html" in response.headers.get("Content-Type", ""):
+            log("Connection Error: Endpoint returned HTML (Check Apps Connection/Password)")
             return False
-        elif response.status_code == 404:
-            log("❌ ERROR: 404 Not Found. URL 地址不对！")
-            log("InfiniCLOUD 的地址通常是: https://你的服务器.infini-cloud.net/dav/")
+        if response.status_code in [401, 403]:
+            log("Auth Error: Access denied")
             return False
-        elif response.status_code == 200 and "html" in response.headers.get("Content-Type", ""):
-            log("❌ ERROR: Server returned HTML (Login Page).")
-            log("这通常意味着 URL 写错了，或者 Apps Connection 没开。")
-            # 打印前200个字符看看是什么网页
-            log(f"Page Content: {response.text[:200]}...")
-            return False
-        elif response.status_code == 207:
-            log("✅ Connection Check Passed! (Status 207 Multi-Status)")
-            return True
-        else:
-            log(f"⚠️ Unknown Status: {response.status_code}")
+        if response.status_code == 404:
+            log("Net Error: Endpoint not found")
             return False
             
-    except Exception as e:
-        log(f"❌ Network Error: {str(e)}")
+        return True
+    except:
         return False
-    finally:
-        log(f"--- DEBUG END ---")
 
 def get_client(url, user, password):
     options = {}
@@ -80,38 +60,35 @@ def recursive_mkdir(client, remote_path):
         current_path += "/" + part
         try:
             if not client.exists(current_path):
-                log(f"Creating directory: {current_path}")
                 client.mkdir(current_path)
-        except Exception:
+        except:
             pass
 
 def run_sync(action, url, user, pwd, remote_dir, local_path):
     if not url:
-        log("Config Error: WEBDAV_URL is empty!")
         return
 
-    # 强制 URL 修正
+    # URL 和路径修正
     if not url.endswith("/"):
         url = url + "/"
-
     if not remote_dir.startswith("/"):
         remote_dir = "/" + remote_dir
     remote_dir = remote_dir.rstrip('/')
 
-    # --- 第一步：先运行诊断 ---
-    if not debug_connection(url, user, pwd):
-        log("🚨 Diagnostics failed. Aborting sync to prevent crash.")
+    # 静默检查
+    if not check_connection(url, user, pwd):
+        log("Sync skipped: Connection unstable")
         return
 
-    # 如果诊断通过，继续常规流程
     try:
         client = get_client(url, user, pwd)
-    except Exception as e:
-        log(f"Client Init Error: {str(e)}")
+    except:
         return
 
     if action == "push":
-        log(f"Starting Backup to: {remote_dir}")
+        # 只有在真正开始传输时才打印一行，平时保持安静
+        # log("Syncing data...") 
+        
         recursive_mkdir(client, remote_dir)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{FILE_PREFIX}{timestamp}.tar.gz"
@@ -129,15 +106,14 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
                         count += 1
             
             if count == 0:
-                log("Local data empty.")
                 return
 
             client.upload_file(TEMP_FILE, remote_full_path, overwrite=True)
-            log(f"Upload SUCCESS: {filename}")
+            log(f"Data synced: {filename}") # 只在成功时说一句话
             
             if os.path.exists(TEMP_FILE): os.remove(TEMP_FILE)
 
-            # Cleanup
+            # 静默清理旧文件
             try:
                 files = client.ls(remote_dir, detail=True)
                 backups = [f for f in files if f["type"] == "file" and f["name"].startswith(FILE_PREFIX)]
@@ -149,12 +125,36 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
                 pass
 
         except Exception as e:
-            log(f"Backup FAILED: {str(e)}")
+            log(f"Sync warning: {str(e)}")
 
     elif action == "pull":
-        # ... (Pull 逻辑保持不变，为节省篇幅省略，因为目前主要卡在连接上) ...
-        # 如果你需要 Pull 代码，请保留之前的 Pull 逻辑
-        pass
+        # 恢复时的日志可以稍微详细一点点，因为只会发生一次
+        log("Initializing data recovery...")
+        try:
+            if not client.exists(remote_dir):
+                log("New instance initialized.")
+                return
+
+            files = client.ls(remote_dir, detail=True)
+            backups = [f for f in files if f["type"] == "file" and f["name"].startswith(FILE_PREFIX)]
+            
+            if not backups:
+                return
+
+            backups.sort(key=lambda x: x["name"], reverse=True)
+            latest = backups[0]
+            remote_full_path = f"{remote_dir}/{latest['name']}"
+            
+            client.download_file(remote_full_path, TEMP_FILE)
+            
+            with tarfile.open(TEMP_FILE, "r:gz") as tar:
+                tar.extractall(path=os.path.dirname(local_path))
+            
+            log("Data restored successfully.")
+            if os.path.exists(TEMP_FILE): os.remove(TEMP_FILE)
+
+        except:
+            log("Recovery skipped.")
 
 if __name__ == "__main__":
     if len(sys.argv) >= 7:
