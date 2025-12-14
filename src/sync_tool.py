@@ -51,20 +51,25 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
         log("No WebDAV URL provided, skipping sync.")
         return False
     
-    # 规范化 URL 和路径
-    if not url.endswith("/"): 
-        url = url + "/"
+    # 规范化 URL 和路径 - 确保尾部斜杠一致性
+    url = url.rstrip('/')  # 先移除所有尾部斜杠
     if not remote_dir.startswith("/"): 
         remote_dir = "/" + remote_dir
     remote_dir = remote_dir.rstrip('/')
+    
+    # 为了避免 301 重定向，确保 base URL 不以斜杠结尾
+    # 但完整路径需要正确格式化
+    log(f"WebDAV URL: {url}")
+    log(f"Remote directory: {remote_dir}")
 
-    # 检查连接
-    if not check_connection(url, user, pwd):
+    # 检查连接 - 使用标准化的 URL
+    if not check_connection(url + "/", user, pwd):
         log("WebDAV connection failed or not configured.")
         return False
 
     try:
-        client = get_client(url, user, pwd)
+        # WebDAV 客户端需要以斜杠结尾的 URL
+        client = get_client(url + "/", user, pwd)
     except Exception as e:
         log(f"Failed to create WebDAV client: {str(e)}")
         return False
@@ -109,8 +114,21 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             
             # 2. 上传到 WebDAV
             log(f"Uploading backup ({count} files)...")
-            client.upload_file(TEMP_FILE, remote_full_path, overwrite=True)
-            log(f"✓ Backup uploaded: {filename}")
+            try:
+                client.upload_file(TEMP_FILE, remote_full_path, overwrite=True)
+                log(f"✓ Backup uploaded: {filename}")
+            except Exception as upload_err:
+                log(f"Upload failed: {str(upload_err)}")
+                # 尝试确保目录存在后重试
+                try:
+                    recursive_mkdir(client, remote_dir)
+                    client.upload_file(TEMP_FILE, remote_full_path, overwrite=True)
+                    log(f"✓ Backup uploaded (retry): {filename}")
+                except Exception as retry_err:
+                    log(f"Upload retry failed: {str(retry_err)}")
+                    if os.path.exists(TEMP_FILE): 
+                        os.remove(TEMP_FILE)
+                    return False
             
             # 清理临时文件
             if os.path.exists(TEMP_FILE): 
@@ -119,6 +137,13 @@ def run_sync(action, url, user, pwd, remote_dir, local_path):
             # 3. 清理旧备份（保留最新的 MAX_BACKUPS 个）
             log("Checking for old backups to clean up...")
             try:
+                # 确保目录存在且可访问
+                if not client.exists(remote_dir):
+                    log(f"Remote directory {remote_dir} does not exist yet.")
+                    if os.path.exists(TEMP_FILE): 
+                        os.remove(TEMP_FILE)
+                    return True
+                
                 files = client.ls(remote_dir, detail=True)
                 
                 # 筛选所有备份文件
