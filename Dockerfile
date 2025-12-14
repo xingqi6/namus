@@ -33,7 +33,8 @@ RUN pip install --no-cache-dir huggingface_hub webdav4 requests
 # 4. 创建目录结构
 # /assets: 伪装后的音乐目录 (原 /music)
 # /data/hf_cache: 专门用于存放 HF 下载缓存，防止权限报错
-RUN mkdir -p /data/cache /data/hf_cache /assets /config /.cache /app
+# /assets/.cache: HF 下载临时文件目录
+RUN mkdir -p /data/cache /data/hf_cache /assets /assets/.cache /config /.cache /app
 
 # 5. 复制文件
 # 将 navidrome 改名为 server_core 以隐藏进程特征
@@ -42,10 +43,13 @@ COPY src/entry.sh /app/entry.sh
 COPY src/sync_tool.py /app/sync_tool.py
 COPY src/res_loader.py /app/res_loader.py
 
-# 6. 设置权限
-# 赋予脚本执行权限，并修正所有目录的所有者为 1000 (非 root 用户)
+# 6. 设置权限（关键修复）
+# 先修改所有目录的所有者为 1000:1000
+# 然后设置正确的权限，确保用户可以读写
 RUN chmod +x /app/entry.sh /app/server_core && \
-    chown -R 1000:1000 /data /assets /config /venv /.cache /app
+    chown -R 1000:1000 /data /assets /config /venv /.cache /app && \
+    chmod -R 755 /data /assets /config && \
+    chmod -R 777 /assets/.cache /data/hf_cache
 
 # --- 环境变量配置 (关键伪装与修复) ---
 # 强制 Navidrome 读取 /assets 目录
@@ -60,6 +64,8 @@ ENV ND_QUIET=true
 ENV ND_UWELCOMEMESSAGE=""
 # 【新增】指定 HF 下载缓存路径到我们有权限的目录
 ENV HF_HOME=/data/hf_cache
+# 【新增】HF 下载临时文件路径
+ENV TMPDIR=/assets/.cache
 
 # 使用非 root 用户运行
 USER 1000
